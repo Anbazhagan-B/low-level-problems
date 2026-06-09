@@ -2,7 +2,8 @@
   "permissions": {
     "allow": [
       "PowerShell(git add -A)",
-      "PowerShell(git rm --cached .claude/settings.local.json --quiet)"
+      "PowerShell(git rm --cached .claude/settings.local.json --quiet)",
+      "PowerShell(git push -u origin main)"
     ]
   }
 }
