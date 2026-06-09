@@ -4,21 +4,38 @@ Scope locked per Step 1: in-memory, single-JVM, thread-safe. Vote deltas: questi
 
 ---
 
+## Step 1. Clarify Requirements
+
+Functional Requirements
+
+Post content — Users can post questions; users can post answers to questions; users can comment on both questions and answers.
+Vote — Users can upvote/downvote questions and answers (not comments, per classic SO behavior).
+Tags — Each question carries one or more tags.
+Search — Find questions by keyword (in title/body), by tag, or by author.
+Reputation — User reputation changes based on activity: e.g., your question gets upvoted (+5), your answer gets upvoted (+10), downvote received (−2), etc. Exact numbers are configurable — the mechanism is what matters.
+Accept answer (implied, worth confirming) — The question author can mark one answer as accepted.
+
+Non-Functional Requirements
+
+Concurrency & consistency — Multiple users may vote on the same post or update reputation simultaneously; counts must not be lost or double-applied.
+Extensibility — Adding a new votable/commentable content type (e.g., a "wiki post") or a new reputation rule should not require rewriting existing classes. This screams interface-based design.
+Scale (LLD framing) — This is an in-memory, single-JVM design for the interview. We model the object structure correctly; we do not design sharded databases or search indexes (that's HLD). Search is linear scan or simple in-memory index.
+
 ## Step 2 — Entities, Enums, Relationships
 
 ### Core entities
 
-| Entity | Role |
-|---|---|
-| `User` | Actor; owns reputation |
-| `Post` (abstract) | Shared behavior of Question & Answer: body, author, votes, comments |
-| `Question` | A Post with title, tags, answers, accepted answer |
-| `Answer` | A Post belonging to one Question; can be accepted |
-| `Comment` | Lightweight note on a Post; not votable |
-| `Vote` | Record of (voter, type) — the *fact* of a vote, needed to enforce one-per-user |
-| `Tag` | Value object; shared label across questions |
-| `StackOverflowService` | Facade + in-memory repositories |
-| `SearchStrategy` (+ impls) | Pluggable search behavior |
+| Entity                     | Role                                                                           |
+| -------------------------- | ------------------------------------------------------------------------------ |
+| `User`                     | Actor; owns reputation                                                         |
+| `Post` (abstract)          | Shared behavior of Question & Answer: body, author, votes, comments            |
+| `Question`                 | A Post with title, tags, answers, accepted answer                              |
+| `Answer`                   | A Post belonging to one Question; can be accepted                              |
+| `Comment`                  | Lightweight note on a Post; not votable                                        |
+| `Vote`                     | Record of (voter, type) — the _fact_ of a vote, needed to enforce one-per-user |
+| `Tag`                      | Value object; shared label across questions                                    |
+| `StackOverflowService`     | Facade + in-memory repositories                                                |
+| `SearchStrategy` (+ impls) | Pluggable search behavior                                                      |
 
 ### Enums & constants
 
@@ -27,17 +44,17 @@ Scope locked per Step 1: in-memory, single-JVM, thread-safe. Vote deltas: questi
 
 ### Relationships (and why each type)
 
-| Relationship | Type | Why |
-|---|---|---|
-| Question → Answer | **Composition** | An Answer cannot exist without its Question; delete the question, the answers are meaningless. Question owns the lifecycle. |
-| Post → Comment | **Composition** | Same lifecycle argument. |
-| Post → Vote | **Composition** | A vote only exists *on* a post. |
-| Question → Tag | **Aggregation** | Tags exist independently and are shared across many questions. Deleting a question does not delete `java` the tag. |
-| User → Question/Answer/Comment/Vote | **Association** | The user *authored* it, but doesn't own its lifecycle in our model (real SO keeps posts after account deletion). |
-| Service → SearchStrategy | **Dependency / Strategy** | Service uses a strategy passed at call time; no ownership. |
-| Question/Answer → Post | **Inheritance** | True is-a; both are votable, commentable, authored content. |
+| Relationship                        | Type                      | Why                                                                                                                         |
+| ----------------------------------- | ------------------------- | --------------------------------------------------------------------------------------------------------------------------- |
+| Question → Answer                   | **Composition**           | An Answer cannot exist without its Question; delete the question, the answers are meaningless. Question owns the lifecycle. |
+| Post → Comment                      | **Composition**           | Same lifecycle argument.                                                                                                    |
+| Post → Vote                         | **Composition**           | A vote only exists _on_ a post.                                                                                             |
+| Question → Tag                      | **Aggregation**           | Tags exist independently and are shared across many questions. Deleting a question does not delete `java` the tag.          |
+| User → Question/Answer/Comment/Vote | **Association**           | The user _authored_ it, but doesn't own its lifecycle in our model (real SO keeps posts after account deletion).            |
+| Service → SearchStrategy            | **Dependency / Strategy** | Service uses a strategy passed at call time; no ownership.                                                                  |
+| Question/Answer → Post              | **Inheritance**           | True is-a; both are votable, commentable, authored content.                                                                 |
 
-**The mistake most candidates make here:** modeling `Vote` as just an `int counter` on Post. That loses the information needed to enforce "one vote per user" and to support vote-changing later. The counter is *derived state*; the `Map<userId, Vote>` is the *source of truth*.
+**The mistake most candidates make here:** modeling `Vote` as just an `int counter` on Post. That loses the information needed to enforce "one vote per user" and to support vote-changing later. The counter is _derived state_; the `Map<userId, Vote>` is the _source of truth_.
 
 A second common over-model: giving `Comment` votes and reputation. We deliberately keep Comment dumb — it shows the interviewer you can resist symmetric-but-unnecessary design.
 
@@ -92,7 +109,7 @@ A second common over-model: giving `Comment` votes and reputation. We deliberate
 
 **SOLID**
 
-- **S — Single Responsibility:** `Post` manages voting/commenting mechanics; `User` manages reputation arithmetic; `SearchStrategy` impls each own exactly one matching rule; the Service only orchestrates and stores. Reputation *amounts* live in `ReputationPolicy`, not scattered through entities.
+- **S — Single Responsibility:** `Post` manages voting/commenting mechanics; `User` manages reputation arithmetic; `SearchStrategy` impls each own exactly one matching rule; the Service only orchestrates and stores. Reputation _amounts_ live in `ReputationPolicy`, not scattered through entities.
 - **O — Open/Closed:** new search dimension = new `SearchStrategy` class, zero edits to the service. New rep rule = edit one constants class. A new votable content type = extend `Post`.
 - **L — Liskov:** anywhere a `Post` is expected (voting, commenting), a `Question` or `Answer` substitutes cleanly; subclasses only specialize the protected `reputationDelta` hook, never weaken the base contract.
 - **I — Interface Segregation:** `Votable` and `Commentable` are separate. If we later add a `TagWiki` that's commentable but not votable, it implements only one interface instead of inheriting dead methods.
@@ -100,15 +117,15 @@ A second common over-model: giving `Comment` votes and reputation. We deliberate
 
 **Design patterns and exactly why they fit**
 
-1. **Strategy (search):** the *algorithm varies* (keyword vs tag vs author) while the *context is fixed* (filter a collection of questions). Encoding each as a class lets callers compose/choose at runtime and lets us add ranking strategies later without touching the service. The alternative — an enum + switch inside `search()` — violates OCP and grows into a god-method.
-2. **Template Method (voting):** `Post.vote()` owns the invariant steps every vote must perform (reject self-vote, reject duplicate atomically, adjust score, award reputation) and delegates only the variable step — *how much reputation* — to a protected hook. This guarantees subclasses can't accidentally skip the duplicate check.
-3. **Singleton (service):** there must be exactly one in-memory store per JVM, accessed from many threads. *Spring aside:* in a real app you'd never hand-roll this — a `@Service` bean is a container-managed singleton by default scope, which also makes it testable via injection. Say that sentence in an interview; it shows you know why hand-rolled Singletons are disliked.
-4. **Observer (mentioned, not implemented):** reputation could be event-driven — posts publish `VoteEvent`s, a `ReputationManager` subscribes. That fully decouples scoring from content. We chose the direct hook for brevity, but you should *name* this trade-off: direct = simpler and synchronous; Observer = decoupled, and the natural seam for adding badges/notifications later.
+1. **Strategy (search):** the _algorithm varies_ (keyword vs tag vs author) while the _context is fixed_ (filter a collection of questions). Encoding each as a class lets callers compose/choose at runtime and lets us add ranking strategies later without touching the service. The alternative — an enum + switch inside `search()` — violates OCP and grows into a god-method.
+2. **Template Method (voting):** `Post.vote()` owns the invariant steps every vote must perform (reject self-vote, reject duplicate atomically, adjust score, award reputation) and delegates only the variable step — _how much reputation_ — to a protected hook. This guarantees subclasses can't accidentally skip the duplicate check.
+3. **Singleton (service):** there must be exactly one in-memory store per JVM, accessed from many threads. _Spring aside:_ in a real app you'd never hand-roll this — a `@Service` bean is a container-managed singleton by default scope, which also makes it testable via injection. Say that sentence in an interview; it shows you know why hand-rolled Singletons are disliked.
+4. **Observer (mentioned, not implemented):** reputation could be event-driven — posts publish `VoteEvent`s, a `ReputationManager` subscribes. That fully decouples scoring from content. We chose the direct hook for brevity, but you should _name_ this trade-off: direct = simpler and synchronous; Observer = decoupled, and the natural seam for adding badges/notifications later.
 
 ### The two decisions an interviewer will probe
 
 1. **How do you enforce one-vote-per-user under concurrency?** Answer: the vote map is the source of truth and `putIfAbsent` makes check-and-insert a single atomic operation. (Detailed in Step 5.)
-2. **Why an abstract `Post` instead of separate Question/Answer classes?** Answer: voting and commenting are genuinely identical behavior with shared invariants; duplicating them invites divergence (e.g., the self-vote check fixed in one class but not the other). Inheritance is justified by shared *behavior + invariants*, not just shared fields.
+2. **Why an abstract `Post` instead of separate Question/Answer classes?** Answer: voting and commenting are genuinely identical behavior with shared invariants; duplicating them invites divergence (e.g., the self-vote check fixed in one class but not the other). Inheritance is justified by shared _behavior + invariants_, not just shared fields.
 
 ---
 
@@ -585,15 +602,15 @@ public class StackOverflowDemo {
 
 ### Invalid input & boundary conditions
 
-| Case | Handling |
-|---|---|
-| Blank title/body/comment | `IllegalArgumentException` in constructors — invalid objects can never exist |
-| Vote on own post | `IllegalArgumentException` in `Post.vote()` |
-| Duplicate vote | `IllegalStateException` — caller distinguishes "bad request" from "conflicting state" |
-| Accept by non-author / answer from another question / second accept | `IllegalStateException` / `IllegalArgumentException` in `acceptAnswer` |
-| Unknown user/question/answer IDs | guard methods in service throw early with clear messages |
-| Reputation below 0 | `Math.max(0, ...)` inside the atomic update — the floor can't be raced past |
-| Search no matches | empty list, never null |
+| Case                                                                | Handling                                                                              |
+| ------------------------------------------------------------------- | ------------------------------------------------------------------------------------- |
+| Blank title/body/comment                                            | `IllegalArgumentException` in constructors — invalid objects can never exist          |
+| Vote on own post                                                    | `IllegalArgumentException` in `Post.vote()`                                           |
+| Duplicate vote                                                      | `IllegalStateException` — caller distinguishes "bad request" from "conflicting state" |
+| Accept by non-author / answer from another question / second accept | `IllegalStateException` / `IllegalArgumentException` in `acceptAnswer`                |
+| Unknown user/question/answer IDs                                    | guard methods in service throw early with clear messages                              |
+| Reputation below 0                                                  | `Math.max(0, ...)` inside the atomic update — the floor can't be raced past           |
+| Search no matches                                                   | empty list, never null                                                                |
 
 Design choice worth voicing: we use **unchecked exceptions** for rule violations. These are programming/state errors, not recoverable I/O conditions; checked exceptions here would pollute every signature. In a Spring API layer you'd translate them to 400/409 in a `@ControllerAdvice`.
 
@@ -609,40 +626,40 @@ Design choice worth voicing: we use **unchecked exceptions** for rule violations
 
 **Primitive chosen for each, and why:**
 
-1. **Voting — `ConcurrentHashMap.putIfAbsent` (CAS-based check-and-act).** The hazard is the classic *check-then-act race*: thread A checks "bob hasn't voted", thread B checks the same, both insert → double vote. `putIfAbsent` collapses check+insert into one atomic map operation; exactly one thread gets `null` back and proceeds to mutate score/reputation. The losing thread throws. No lock, no contention bottleneck on hot posts.
-2. **Score & reputation — `AtomicInteger`.** `addAndGet`/`updateAndGet` are lock-free CAS loops. A plain `int` with `score++` is a read-modify-write race (two +1s can yield +1). We don't need `synchronized` because each counter is a *single independent variable* — atomics are sufficient and faster.
+1. **Voting — `ConcurrentHashMap.putIfAbsent` (CAS-based check-and-act).** The hazard is the classic _check-then-act race_: thread A checks "bob hasn't voted", thread B checks the same, both insert → double vote. `putIfAbsent` collapses check+insert into one atomic map operation; exactly one thread gets `null` back and proceeds to mutate score/reputation. The losing thread throws. No lock, no contention bottleneck on hot posts.
+2. **Score & reputation — `AtomicInteger`.** `addAndGet`/`updateAndGet` are lock-free CAS loops. A plain `int` with `score++` is a read-modify-write race (two +1s can yield +1). We don't need `synchronized` because each counter is a _single independent variable_ — atomics are sufficient and faster.
 3. **Answer/comment lists — `CopyOnWriteArrayList`.** Read-heavy, append-only, iteration must never throw `ConcurrentModificationException`. COW gives lock-free reads at the cost of copying on write — the right trade when reads ≫ writes. (If answers were edited/removed frequently, I'd switch to a `synchronized` list or a `ConcurrentLinkedQueue` and say why.)
 4. **Accepted answer — `AtomicReference.compareAndSet(null, answer)`.** Two threads racing to accept: CAS guarantees exactly one wins; the other sees `false` and throws. This is the same one-shot-claim idiom as the vote map, on a single reference instead of a map entry.
 5. **Repositories — `ConcurrentHashMap`.** Safe concurrent get/put with no global lock.
 
-**Is there a deadlock?** No thread ever holds one lock while acquiring another — in fact, no explicit locks exist; everything is a single atomic operation (CAS or one concurrent-collection call). Deadlock requires hold-and-wait on ≥2 locks; we have zero. Livelock: CAS retry loops in `AtomicInteger` are bounded in practice and each retry means *someone else* made progress — the system as a whole always advances (lock-freedom).
+**Is there a deadlock?** No thread ever holds one lock while acquiring another — in fact, no explicit locks exist; everything is a single atomic operation (CAS or one concurrent-collection call). Deadlock requires hold-and-wait on ≥2 locks; we have zero. Livelock: CAS retry loops in `AtomicInteger` are bounded in practice and each retry means _someone else_ made progress — the system as a whole always advances (lock-freedom).
 
-**Known consistency gap to admit proactively (this earns points):** `vote()` performs three steps — insert vote, bump score, bump reputation. Each step is atomic, but the *triple* is not one transaction. A reader between steps could see the vote recorded but the score not yet bumped. For an in-memory LLD this eventual-within-microseconds consistency is acceptable; if strict atomicity were required, I'd wrap the triple in a per-post `ReentrantLock` (coarser, simpler to reason about) or, in a real system, a DB transaction. Naming this trade-off unprompted is exactly what separates senior candidates.
+**Known consistency gap to admit proactively (this earns points):** `vote()` performs three steps — insert vote, bump score, bump reputation. Each step is atomic, but the _triple_ is not one transaction. A reader between steps could see the vote recorded but the score not yet bumped. For an in-memory LLD this eventual-within-microseconds consistency is acceptable; if strict atomicity were required, I'd wrap the triple in a per-post `ReentrantLock` (coarser, simpler to reason about) or, in a real system, a DB transaction. Naming this trade-off unprompted is exactly what separates senior candidates.
 
 ---
 
 ## Interviewer Follow-ups (with model answers)
 
 **1. "Let users change or retract their vote."**
-The `Map<userId, Vote>` source-of-truth makes this tractable: `changeVote` does `votesByUser.replace(userId, oldVote, newVote)` (atomic CAS replace), then applies the score/rep *delta between old and new* (e.g., down→up on an answer: score +2, rep +12). Retraction uses `remove(userId, oldVote)` and reverses the deltas. If we'd stored only a counter, this feature would be impossible — say that; it justifies the original modeling decision.
+The `Map<userId, Vote>` source-of-truth makes this tractable: `changeVote` does `votesByUser.replace(userId, oldVote, newVote)` (atomic CAS replace), then applies the score/rep _delta between old and new_ (e.g., down→up on an answer: score +2, rep +12). Retraction uses `remove(userId, oldVote)` and reverses the deltas. If we'd stored only a counter, this feature would be impossible — say that; it justifies the original modeling decision.
 
 **2. "Add badges (e.g., 'first upvoted answer')."**
 This is where the Observer pattern pays off: introduce a `PostEvent` (VOTED, ACCEPTED, COMMENTED) and an `EventPublisher` the posts notify. `ReputationManager` and `BadgeManager` become independent subscribers. Posts stop knowing about reputation at all — better SRP. In Spring: `ApplicationEventPublisher` + `@EventListener`.
 
 **3. "What changes at 10x/1000x scale — multiple servers?"**
-Atomics and `ConcurrentHashMap` only protect one JVM. Cross-server you move the invariants into the datastore: unique constraint on `(post_id, user_id)` in a votes table enforces one-vote-per-user; score becomes a DB atomic increment or a periodically reconciled counter; keyword search moves to an inverted index (Elasticsearch); reputation updates become async events on a queue so vote latency doesn't include rep math. The *class design barely changes* — the synchronization strategy is what's swapped. That separation is why we kept policy/strategy isolated.
+Atomics and `ConcurrentHashMap` only protect one JVM. Cross-server you move the invariants into the datastore: unique constraint on `(post_id, user_id)` in a votes table enforces one-vote-per-user; score becomes a DB atomic increment or a periodically reconciled counter; keyword search moves to an inverted index (Elasticsearch); reputation updates become async events on a queue so vote latency doesn't include rep math. The _class design barely changes_ — the synchronization strategy is what's swapped. That separation is why we kept policy/strategy isolated.
 
 **4. "Why Strategy for search instead of one method with a filter parameter?"**
 A `search(String keyword, String tag, User author)` method with nullable params grows combinatorially and every new dimension edits the method (OCP violation). Strategies are independently testable, composable (chain them), and adding `RecencyRankingStrategy` later touches nothing existing. Counter-trade-off to admit: for only 2–3 fixed criteria, Strategy is arguably over-engineering — Java predicates (`Predicate<Question>` composition) are a lighter modern alternative. Knowing both answers is the senior move.
 
 **5. "Make `vote()` strictly atomic across vote+score+reputation."**
-Per-post `ReentrantLock`: lock, do all three, unlock in `finally`. Locks are per-post so there's no global contention, and we never take two locks (the user reputation update is itself atomic and we never lock User), so no lock-ordering deadlock. Cost: voters on the *same* hot post serialize. Mention `tryLock` with timeout as the defensive variant.
+Per-post `ReentrantLock`: lock, do all three, unlock in `finally`. Locks are per-post so there's no global contention, and we never take two locks (the user reputation update is itself atomic and we never lock User), so no lock-ordering deadlock. Cost: voters on the _same_ hot post serialize. Mention `tryLock` with timeout as the defensive variant.
 
 ---
 
 ## Transferable Lessons
 
-1. **"Store the fact, derive the count."** The Vote-map-plus-cached-counter shape reappears in Parking Lot (spot assignments), Movie Booking (seat locks), Splitwise (transactions vs balances). Whenever a requirement says "a user can do X *once*," your data model needs to remember *who* did X, and `putIfAbsent`/`compareAndSet` is the thread-safe enforcement.
+1. **"Store the fact, derive the count."** The Vote-map-plus-cached-counter shape reappears in Parking Lot (spot assignments), Movie Booking (seat locks), Splitwise (transactions vs balances). Whenever a requirement says "a user can do X _once_," your data model needs to remember _who_ did X, and `putIfAbsent`/`compareAndSet` is the thread-safe enforcement.
 2. **One-shot claim via CAS** (`compareAndSet(null, winner)`) is the universal idiom for "exactly one of N concurrent actors succeeds" — accepted answers here, seat booking, locker assignment, leader claim later in the concurrency set.
 3. **Template Method for invariants + hook for variance** keeps subclasses from forgetting safety checks — you'll reuse it for state-transition validation in Vending Machine / Elevator.
 4. **Strategy whenever the verb is fixed but the algorithm varies** — search here, pricing in Parking Lot, splitting in Splitwise, matching in Ride Sharing.
