@@ -27,9 +27,9 @@ import static ruleengine.factory.RuleFactory.cond;
 public final class Main {
     public static void main(String[] args) {
         demoFirstMatch();
-        // demoAllMatch();
-        // demoMissingFact();
-        // demoRuntimeEdit();
+        demoAllMatch();
+        demoMissingFact();
+        demoRuntimeEdit();
     }
 
     /** Example from the LLD doc: creditScore > 700 AND income >= 50000 -> APPROVE. */
